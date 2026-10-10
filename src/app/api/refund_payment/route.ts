@@ -16,7 +16,7 @@ function parseResponse(text: string): unknown {
 	} catch {
 		return {
 			message: text || "Invalid response from refund payment server.",
-		};
+		}; 
 	}
 }
 
@@ -26,6 +26,7 @@ function getStatus(data: unknown, fallback: number): number {
 
 		if (typeof value === "number" && value >= 100 && value <= 599) {
 			return value;
+			
 		}
 	}
 

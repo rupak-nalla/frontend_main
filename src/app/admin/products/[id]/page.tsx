@@ -8,6 +8,7 @@ import {
 	AlertCircle,
 	ArrowLeft,
 	ArrowRight,
+	Check,
 	Image as ImageIcon,
 	Layers3,
 	Loader2,
@@ -21,6 +22,8 @@ import {
 	Truck,
 	X,
 } from "lucide-react";
+
+import { assetUrl, fetchSiteConfig } from "@/app/lib/siteConfig";
 
 const PRODUCT_IMAGE_BASE_URL =
 	"https://api.printinghouseujjain.in/assets/products/";
@@ -36,6 +39,14 @@ type Category = {
 type Occasion = {
 	id: number;
 	name: string;
+};
+
+/* Font defined in site-config: { "open_sans": { name, path } } */
+type SiteFont = {
+	key: string;
+	name: string;
+	url: string;
+	family: string;
 };
 
 type RawProduct = {
@@ -85,7 +96,7 @@ type Order = {
 	customer: string;
 };
 
-type CustomizationType = "text" | "photo" | "photos";
+type CustomizationType = "text" | "photo" | "photos" | "font";
 
 type CustomizationRequirement = {
 	key: string;
@@ -390,6 +401,54 @@ function dateValue(value?: string) {
 }
 
 /* ============================================================================
+   SITE FONTS (from site-config "fonts")
+============================================================================ */
+
+function parseSiteFonts(config: unknown): SiteFont[] {
+	if (!config || typeof config !== "object") {
+		return [];
+	}
+
+	const rawFonts = (config as { fonts?: unknown }).fonts;
+
+	if (!rawFonts || typeof rawFonts !== "object" || Array.isArray(rawFonts)) {
+		return [];
+	}
+
+	const fonts: SiteFont[] = [];
+
+	Object.entries(rawFonts as Record<string, unknown>).forEach(
+		([key, value]) => {
+			if (!value || typeof value !== "object") return;
+
+			const font = value as { name?: unknown; path?: unknown };
+
+			if (typeof font.path !== "string" || !font.path.trim()) return;
+
+			fonts.push({
+				key,
+				name:
+					typeof font.name === "string" && font.name.trim()
+						? font.name.trim()
+						: key,
+				url: assetUrl(font.path),
+				family: `site-font-${key.replace(/[^a-zA-Z0-9_-]/g, "")}`,
+			});
+		},
+	);
+
+	return fonts;
+}
+
+/* Selected font keys are stored comma-separated in the requirement's label slot */
+function selectedFontKeys(requirement: CustomizationRequirement): string[] {
+	return requirement.example
+		.split(",")
+		.map((item) => item.trim())
+		.filter(Boolean);
+}
+
+/* ============================================================================
    CUSTOMIZATION REQUIREMENT PARSER
 
    Supported backend formats:
@@ -397,12 +456,14 @@ function dateValue(value?: string) {
    text:10:Name to print
    photo:Example photo
    photos:5:Reference photos
+   fontforname:font:open_sans,other_font
 ============================================================================ */
 
 const CUSTOMIZATION_TYPE_KEYWORDS = new Set<CustomizationType>([
 	"text",
 	"photo",
 	"photos",
+	"font",
 ]);
 
 function isCustomizationType(value: string): value is CustomizationType {
@@ -429,12 +490,12 @@ function parseCustomizationRequirement(
 	const second = (parts[1] ?? "").trim().toLowerCase();
 
 	// "key:type:limit:label" (e.g. "frontname:text:10:Name to be printed on
-	// front side") or "key:photo:label" — the attribute name comes first,
-	// followed by the type keyword.
+	// front side") or "key:photo:label" / "fontforname:font:Choose Font"
+	// — the attribute name comes first, followed by the type keyword.
 	if (isCustomizationType(second)) {
 		const type = second;
 
-		if (type === "photo") {
+		if (type === "photo" || type === "font") {
 			return {
 				key: first,
 				type,
@@ -451,14 +512,15 @@ function parseCustomizationRequirement(
 		};
 	}
 
-	// "type:limit:label" or "photo:label" — no attribute name given, just
-	// the type keyword first. The key gets auto-generated on save.
+	// "type:limit:label" or "photo:label" / "font:label" — no attribute
+	// name given, just the type keyword first. The key gets auto-generated
+	// on save.
 	if (isCustomizationType(firstLower)) {
 		const type = firstLower;
 
-		if (type === "photo") {
+		if (type === "photo" || type === "font") {
 			return {
-				key: "",
+				key: type === "font" ? "fontforname" : "",
 				type,
 				limit: "",
 				example: parts.slice(1).join(":").trim(),
@@ -507,10 +569,16 @@ function serializeCustomizationRequirement(
 		requirement.key.trim() ||
 		(type === "photo"
 			? "photo"
-			: `${type}_${slugifyForKey(example) || "field"}`);
+			: type === "font"
+				? "fontforname"
+				: `${type}_${slugifyForKey(example) || "field"}`);
 
 	if (type === "photo") {
 		return `${key}:photo:${example}`;
+	}
+
+	if (type === "font") {
+		return `${key}:font:${example || "Choose Font"}`;
 	}
 
 	return `${key}:${type}:${limit}:${example}`;
@@ -935,16 +1003,30 @@ function ReviewPhotos({ photos }: { photos: string[] }) {
 function CustomizationRequirementRow({
 	requirement,
 	index,
+	fonts,
 	onChange,
 	onRemove,
 }: {
 	requirement: CustomizationRequirement;
 	index: number;
+	fonts: SiteFont[];
 	onChange: (index: number, changes: Partial<CustomizationRequirement>) => void;
 	onRemove: (index: number) => void;
 }) {
+	const isFont = requirement.type === "font";
+
+	const selectedFonts = isFont ? selectedFontKeys(requirement) : [];
+
+	const toggleFont = (fontKey: string) => {
+		const next = selectedFonts.includes(fontKey)
+			? selectedFonts.filter((item) => item !== fontKey)
+			: [...selectedFonts, fontKey];
+
+		onChange(index, { example: next.join(",") });
+	};
+
 	return (
-		<div className="space-y-2.5 rounded-xl border border-[#E8DED7] bg-[#FBF9F7] p-3.5">
+		<div className="space-y-3 rounded-xl border border-[#E8DED7] bg-[#FBF9F7] p-3.5">
 			{/* KEY + TYPE */}
 			<div className="flex flex-col gap-2.5 sm:flex-row sm:items-start">
 				<label className="flex-1">
@@ -955,11 +1037,13 @@ function CustomizationRequirementRow({
 						type="text"
 						value={requirement.key}
 						onChange={(event) => onChange(index, { key: event.target.value })}
-						placeholder="frontname"
+						placeholder={isFont ? "fontforname" : "frontname"}
 						className="h-10 w-full rounded-lg border border-[#E8DED7] bg-white px-3 text-sm text-[#2E2E2E] outline-none placeholder:text-[#2E2E2E]/35 focus:border-[#85161B] focus:ring-2 focus:ring-[#85161B]/10"
 					/>
 					<span className="mt-1 block text-[10px] normal-case leading-4 text-[#2E2E2E]/40">
-						Sent to backend, e.g. frontname
+						{isFont
+							? "Sent to cart as fontforname=<font tag>"
+							: "Sent to backend, e.g. frontname"}
 					</span>
 				</label>
 
@@ -969,24 +1053,86 @@ function CustomizationRequirementRow({
 					</span>
 					<select
 						value={requirement.type}
-						onChange={(event) =>
+						onChange={(event) => {
+							const nextType = event.target.value as CustomizationType;
+
 							onChange(index, {
-								type: event.target.value as CustomizationType,
-								limit: event.target.value === "photo" ? "" : requirement.limit,
-							})
-						}
+								type: nextType,
+								limit:
+									nextType === "photo" || nextType === "font"
+										? ""
+										: requirement.limit,
+								key:
+									nextType === "font" && !requirement.key.trim()
+										? "fontforname"
+										: requirement.key,
+								/* switching to/from font clears the label slot */
+								example:
+									nextType === "font" || isFont ? "" : requirement.example,
+							});
+						}}
 						className="h-10 w-full rounded-lg border border-[#E8DED7] bg-white px-3 text-sm text-[#2E2E2E] outline-none focus:border-[#85161B] focus:ring-2 focus:ring-[#85161B]/10"
 					>
 						<option value="text">Text</option>
 						<option value="photo">Photo</option>
 						<option value="photos">Photos</option>
+						<option value="font">Font</option>
 					</select>
 				</label>
 			</div>
 
+			{/* FONT PICKER (bubbles) */}
+			{isFont && (
+				<div>
+					<div className="mb-2 flex items-center justify-between gap-3">
+						<span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#2E2E2E]/45">
+							Fonts customers can choose from
+						</span>
+
+						<span className="text-[10px] text-[#2E2E2E]/40">
+							{selectedFonts.length} selected
+						</span>
+					</div>
+
+					{fonts.length === 0 ? (
+						<p className="rounded-lg border border-dashed border-[#E8DED7] bg-white px-3 py-3 text-xs text-[#2E2E2E]/50">
+							No fonts are defined in the site config.
+						</p>
+					) : (
+						<div className="flex flex-wrap gap-2.5">
+							{fonts.map((font) => {
+								const selected = selectedFonts.includes(font.key);
+
+								return (
+									<button
+										key={font.key}
+										type="button"
+										aria-pressed={selected}
+										onClick={() => toggleFont(font.key)}
+										className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-sm transition ${
+											selected
+												? "border-[#85161B] bg-[#85161B] text-white shadow-sm"
+												: "border-[#DED6D0] bg-white text-[#2E2E2E]/70 hover:border-[#85161B]/40 hover:text-[#85161B]"
+										}`}
+										style={{ fontFamily: `"${font.family}", sans-serif` }}
+									>
+										{selected && <Check size={14} />}
+										{font.name}
+									</button>
+								);
+							})}
+						</div>
+					)}
+
+					<p className="mt-2 text-[10px] leading-4 text-[#2E2E2E]/40">
+						Tap a font to select or unselect it.
+					</p>
+				</div>
+			)}
+
 			{/* LIMIT + LABEL + REMOVE */}
 			<div className="flex flex-col gap-2.5 sm:flex-row sm:items-end">
-				{requirement.type !== "photo" && (
+				{requirement.type !== "photo" && !isFont && (
 					<label className="sm:w-[90px]">
 						<span className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.1em] text-[#2E2E2E]/45">
 							{requirement.type === "photos" ? "Max photos" : "Char limit"}
@@ -1004,29 +1150,31 @@ function CustomizationRequirementRow({
 					</label>
 				)}
 
-				<label className="flex-1">
-					<span className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.1em] text-[#2E2E2E]/45">
-						Label shown to customer
-					</span>
-					<input
-						type="text"
-						value={requirement.example}
-						onChange={(event) =>
-							onChange(index, { example: event.target.value })
-						}
-						placeholder={
-							requirement.type === "photo"
-								? "Example: Product photo"
-								: "Example: Name to be printed on front side"
-						}
-						className="h-10 w-full rounded-lg border border-[#E8DED7] bg-white px-3 text-sm text-[#2E2E2E] outline-none placeholder:text-[#2E2E2E]/35 focus:border-[#85161B] focus:ring-2 focus:ring-[#85161B]/10"
-					/>
-				</label>
+				{!isFont && (
+					<label className="flex-1">
+						<span className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.1em] text-[#2E2E2E]/45">
+							Label shown to customer
+						</span>
+						<input
+							type="text"
+							value={requirement.example}
+							onChange={(event) =>
+								onChange(index, { example: event.target.value })
+							}
+							placeholder={
+								requirement.type === "photo"
+									? "Example: Product photo"
+									: "Example: Name to be printed on front side"
+							}
+							className="h-10 w-full rounded-lg border border-[#E8DED7] bg-white px-3 text-sm text-[#2E2E2E] outline-none placeholder:text-[#2E2E2E]/35 focus:border-[#85161B] focus:ring-2 focus:ring-[#85161B]/10"
+						/>
+					</label>
+				)}
 
 				<button
 					type="button"
 					onClick={() => onRemove(index)}
-					className="inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-4 text-xs font-semibold text-red-700 transition hover:bg-red-100"
+					className="inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-4 text-xs font-semibold text-red-700 transition hover:bg-red-100 sm:ml-auto"
 				>
 					<Trash2 size={14} />
 					<span>Remove</span>
@@ -1512,6 +1660,8 @@ export default function AdminProductDetailsPage() {
 
 	const [orders, setOrders] = useState<Order[]>([]);
 
+	const [siteFonts, setSiteFonts] = useState<SiteFont[]>([]);
+
 	const [primaryPhoto, setPrimaryPhoto] = useState<File | null>(null);
 
 	const [otherPhotos, setOtherPhotos] = useState<File[]>([]);
@@ -1541,6 +1691,40 @@ export default function AdminProductDetailsPage() {
 	const [showDeleteReviewConfirm, setShowDeleteReviewConfirm] = useState(false);
 	const [reviewToDelete, setReviewToDelete] = useState<Review | null>(null);
 	const [deleteReviewError, setDeleteReviewError] = useState("");
+
+	/* =========================================================================
+	   LOAD SITE FONTS (site-config)
+	=========================================================================== */
+
+	useEffect(() => {
+		let active = true;
+
+		fetchSiteConfig()
+			.then((config) => {
+				if (active) {
+					setSiteFonts(parseSiteFonts(config));
+				}
+			})
+			.catch((fontError) => {
+				console.error("Failed to load site fonts:", fontError);
+			});
+
+		return () => {
+			active = false;
+		};
+	}, []);
+
+	/* @font-face rules so each font previews in its own typeface */
+	const siteFontCss = useMemo(
+		() =>
+			siteFonts
+				.map(
+					(font) =>
+						`@font-face { font-family: "${font.family}"; src: url("${font.url}"); font-display: swap; }`,
+				)
+				.join("\n"),
+		[siteFonts],
+	);
 
 	/* =========================================================================
 	   LOAD DATA
@@ -2631,6 +2815,8 @@ export default function AdminProductDetailsPage() {
 
 	return (
 		<main className="min-h-screen bg-[#FBF9F7] px-4 py-7 sm:px-6 lg:px-10 lg:py-10">
+			{siteFontCss && <style>{siteFontCss}</style>}
+
 			<div className="mx-auto max-w-7xl">
 				<button
 					type="button"
@@ -2855,6 +3041,69 @@ export default function AdminProductDetailsPage() {
 								</div>
 							</div>
 						</div>
+
+						{/* =================================================================
+						    CUSTOMIZATION REQUIREMENTS
+						    (moved into the main column for more room)
+						================================================================= */}
+
+						<div className="rounded-2xl border border-[#E8DED7] bg-white p-5 shadow-[0_1px_2px_rgba(0,0,0,0.02)] sm:p-6">
+							<div className="flex items-center justify-between">
+								<h2 className="flex items-center gap-2 text-base font-semibold text-[#2E2E2E]">
+									<PenLine size={17} className="text-[#85161B]" />
+									Customization requirements
+								</h2>
+
+								<span className="text-xs text-[#2E2E2E]/45">
+									{form.customizeReqs.length}
+								</span>
+							</div>
+
+							<div className="mt-4 space-y-3">
+								{form.customizeReqs.map((requirement, index) => (
+									<CustomizationRequirementRow
+										key={`${requirement.key || requirement.type}-${index}`}
+										requirement={requirement}
+										index={index}
+										fonts={siteFonts}
+										onChange={updateRequirement}
+										onRemove={removeRequirement}
+									/>
+								))}
+							</div>
+
+							{/* ADD REQUIREMENT */}
+
+							<button
+								type="button"
+								onClick={addRequirement}
+								className="
+									mt-3
+									inline-flex
+									items-center
+									gap-1.5
+									rounded-lg
+									bg-[#85161B]
+									px-3.5
+									py-2.5
+									text-xs
+									font-semibold
+									text-white
+									transition
+									hover:bg-[#6f1116]
+								"
+							>
+								<Plus size={15} />
+								Add Requirement
+							</button>
+
+							{form.customizeReqs.length === 0 && (
+								<p className="mt-3 text-xs leading-5 text-[#2E2E2E]/45">
+									Add fields that customers need to provide when customizing
+									this product.
+								</p>
+							)}
+						</div>
 					</section>
 
 					<aside className="space-y-5">
@@ -3043,67 +3292,6 @@ export default function AdminProductDetailsPage() {
 									selection.
 								</p>
 							</div>
-						</div>
-
-						{/* =================================================================
-						    CUSTOMIZATION REQUIREMENTS
-						================================================================= */}
-
-						<div className="rounded-2xl border border-[#E8DED7] bg-white p-5 shadow-[0_1px_2px_rgba(0,0,0,0.02)] sm:p-6">
-							<div className="flex items-center justify-between">
-								<h2 className="flex items-center gap-2 text-base font-semibold text-[#2E2E2E]">
-									<PenLine size={17} className="text-[#85161B]" />
-									Customization requirements
-								</h2>
-
-								<span className="text-xs text-[#2E2E2E]/45">
-									{form.customizeReqs.length}
-								</span>
-							</div>
-
-							<div className="mt-4 space-y-2.5">
-								{form.customizeReqs.map((requirement, index) => (
-									<CustomizationRequirementRow
-										key={`${requirement.key || requirement.type}-${index}`}
-										requirement={requirement}
-										index={index}
-										onChange={updateRequirement}
-										onRemove={removeRequirement}
-									/>
-								))}
-							</div>
-
-							{/* ADD REQUIREMENT */}
-
-							<button
-								type="button"
-								onClick={addRequirement}
-								className="
-									mt-3
-									inline-flex
-									items-center
-									gap-1.5
-									rounded-lg
-									bg-[#85161B]
-									px-3.5
-									py-2.5
-									text-xs
-									font-semibold
-									text-white
-									transition
-									hover:bg-[#6f1116]
-								"
-							>
-								<Plus size={15} />
-								Add Requirement
-							</button>
-
-							{form.customizeReqs.length === 0 && (
-								<p className="mt-3 text-xs leading-5 text-[#2E2E2E]/45">
-									Add fields that customers need to provide when customizing
-									this product.
-								</p>
-							)}
 						</div>
 
 						{/* VARIANTS */}

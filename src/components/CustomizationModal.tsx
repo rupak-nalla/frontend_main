@@ -11,7 +11,7 @@ import {
 
 export interface CustomizationRequirement {
 	key: string;
-	type: "text" | "photo" | "photos";
+	type: "text" | "photo" | "photos" | "font";
 	max: number;
 	placeholder: string;
 	optional: boolean;
@@ -26,13 +26,45 @@ function parseRequirement(
 ): CustomizationRequirement | null {
 	const parts = requirement.split(":");
 
-	if (parts.length < 4) {
+	if (parts.length < 3) {
 		console.warn("Invalid customization requirement:", requirement);
 		return null;
 	}
 
 	const key = parts[0].trim();
 	const type = parts[1].trim().toLowerCase();
+
+	if (!key) {
+		return null;
+	}
+
+	if (!["text", "photo", "photos", "font"].includes(type)) {
+		console.warn("Unsupported customization type:", type);
+		return null;
+	}
+
+	/* fontforname:font:Choose Font  /  key:photo:Upload Photo */
+	if (type === "font" || type === "photo") {
+		const placeholder =
+			parts.slice(2).join(":").trim() ||
+			(type === "font" ? "Choose Font" : "Upload Photo");
+
+		const optional = /\(optional\)/i.test(placeholder);
+
+		return {
+			key: type === "font" ? key || "fontforname" : key,
+			type: type as "font" | "photo",
+			max: 1,
+			placeholder,
+			optional,
+		};
+	}
+
+	if (parts.length < 4) {
+		console.warn("Invalid customization requirement:", requirement);
+		return null;
+	}
+
 	const max = Number(parts[2].trim());
 
 	/*
@@ -40,15 +72,6 @@ function parseRequirement(
 	 * This means placeholders containing ":" are also supported.
 	 */
 	const placeholder = parts.slice(3).join(":").trim();
-
-	if (!key) {
-		return null;
-	}
-
-	if (!["text", "photo", "photos"].includes(type)) {
-		console.warn("Unsupported customization type:", type);
-		return null;
-	}
 
 	if (!Number.isFinite(max) || max <= 0) {
 		console.warn("Invalid customization max:", max);
@@ -59,7 +82,7 @@ function parseRequirement(
 
 	return {
 		key,
-		type: type as "text" | "photo" | "photos",
+		type: type as "text" | "photos",
 		max,
 		placeholder,
 		optional,

@@ -33,7 +33,7 @@ type Occasion = {
 	name: string;
 };
 
-type CustomizationType = "text" | "photo" | "photos";
+type CustomizationType = "text" | "photo" | "photos" | "font";
 
 type CustomizationRequirement = {
 	id: string;
@@ -381,6 +381,11 @@ export default function NewProductPage() {
 
 		const key = slugify(label) || `custom_${requirement.id}`;
 
+		if (requirement.type === "font") {
+			/* Backend expects fontforname as the cart field for font selection */
+			return `fontforname:font:${label || "Choose Font"}`;
+		}
+
 		if (requirement.type === "photo") {
 			return `${key}:photo:${label}`;
 		}
@@ -653,7 +658,10 @@ export default function NewProductPage() {
 				return "Please enter a label for every customization requirement.";
 			}
 
-			if (customization.type === "text" || customization.type === "photos") {
+			if (
+				customization.type === "text" ||
+				customization.type === "photos"
+			) {
 				const limit = Number(customization.limit);
 
 				if (
@@ -1465,10 +1473,13 @@ export default function NewProductPage() {
 													<option value="photo">Photo</option>
 
 													<option value="photos">Photos</option>
+
+													<option value="font">Font</option>
 												</select>
 											</div>
 
-											{requirement.type !== "photo" && (
+											{requirement.type !== "photo" &&
+												requirement.type !== "font" && (
 												<div>
 													<label className="mb-1.5 block text-xs font-medium text-gray-600">
 														Limit
@@ -1495,11 +1506,16 @@ export default function NewProductPage() {
 
 											<div
 												className={
-													requirement.type === "photo" ? "lg:col-span-2" : ""
+													requirement.type === "photo" ||
+													requirement.type === "font"
+														? "lg:col-span-2"
+														: ""
 												}
 											>
 												<label className="mb-1.5 block text-xs font-medium text-gray-600">
-													Example
+													{requirement.type === "font"
+														? "Label"
+														: "Example"}
 												</label>
 
 												<input
@@ -1517,7 +1533,9 @@ export default function NewProductPage() {
 															? "Example: Brand name"
 															: requirement.type === "photo"
 																? "Example: Upload profile photo"
-																: "Example: Upload photos"
+																: requirement.type === "font"
+																	? "Choose Font"
+																	: "Example: Upload photos"
 													}
 													className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-[#85161B]"
 												/>

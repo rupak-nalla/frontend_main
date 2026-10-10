@@ -22,6 +22,7 @@ import {
 	RefreshCw,
 	ShoppingBag,
 	Trash2,
+	Type,
 	Upload,
 	Video as VideoIcon,
 	X,
@@ -55,6 +56,7 @@ const COMMANDS = {
 	popupImage: "popup_image",
 	popupLink: "popup_link",
 	watchAndBuy: "watch_and_buy",
+	fonts: "fonts",
 } as const;
 
 const FIELDS = {
@@ -62,7 +64,14 @@ const FIELDS = {
 	video: "video",
 	link: "link",
 	productId: "product_id",
+	font: "font",
+	name: "name",
+	tag: "tag",
 } as const;
+
+const MAX_FONT_SIZE = 10 * 1024 * 1024;
+
+const FONT_ACCEPT = ".ttf,.otf,.woff,.woff2,font/ttf,font/otf,font/woff,font/woff2";
 
 /* ─────────────────────────────────────────
    TYPES
@@ -88,6 +97,12 @@ type WatchAndBuyItem = {
 	url: string;
 };
 
+type FontItem = {
+	tag: string;
+	name: string;
+	path: string;
+};
+
 type StoreConfig = {
 	announcements: Announcement[];
 	heroImages: MediaItem[];
@@ -98,6 +113,7 @@ type StoreConfig = {
 	popupImage: string;
 	popupLink: string;
 	watchAndBuy: WatchAndBuyItem[];
+	fonts: FontItem[];
 };
 
 type Submit = (
@@ -118,6 +134,7 @@ const EMPTY_CONFIG: StoreConfig = {
 	popupImage: "",
 	popupLink: "",
 	watchAndBuy: [],
+	fonts: [],
 };
 
 /* ─────────────────────────────────────────
@@ -162,6 +179,63 @@ function validateFile(file: File | null, kind: MediaKind) {
 	}
 
 	return null;
+}
+
+function validateFontFile(file: File | null) {
+	if (!file) {
+		return "Please select a font file.";
+	}
+
+	const isFont =
+		file.type.startsWith("font/") ||
+		/\.(ttf|otf|woff2?|eot)$/i.test(file.name);
+
+	if (!isFont) {
+		return "Please select a valid font file (.ttf, .otf, .woff, .woff2).";
+	}
+
+	if (file.size > MAX_FONT_SIZE) {
+		return "Font file size must not exceed 10 MB.";
+	}
+
+	return null;
+}
+
+function slugifyFontTag(value: string) {
+	return value
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "_")
+		.replace(/^_+|_+$/g, "");
+}
+
+function parseFonts(value: unknown): FontItem[] {
+	if (!isObject(value) || Array.isArray(value)) {
+		return [];
+	}
+
+	return Object.entries(value)
+		.map(([tag, entry]) => {
+			if (typeof entry === "string" && entry.trim()) {
+				return { tag, name: tag, path: entry.trim() };
+			}
+
+			if (isObject(entry)) {
+				const path = getString(entry, ["path", "url", "font", "src"]);
+
+				if (!path) {
+					return null;
+				}
+
+				const name = getString(entry, ["name", "label", "title"]) || tag;
+
+				return { tag, name, path };
+			}
+
+			return null;
+		})
+		.filter((item): item is FontItem => item !== null)
+		.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function getBackendMessage(data: unknown, fallback: string) {
@@ -258,6 +332,7 @@ function validatePopupLink(value: string): string | null {
 
    {
      "strip": [...],
+     "fonts": { "open_sans": { "name": "…", "path": "assets/fonts/…" } },
      "hero": ["assets/…"],
      "showcase": ["assets/…"],
      "videos": ["assets/…mp4"],
@@ -407,6 +482,7 @@ function parseStoreConfig(raw: unknown): StoreConfig {
 		watchAndBuy: parseWatchAndBuy(
 			config.watch_and_buy ?? config.watchAndBuy,
 		),
+		fonts: parseFonts(config.fonts),
 	};
 }
 
@@ -1191,6 +1267,379 @@ function WatchAndBuyManager({
 }
 
 /* ─────────────────────────────────────────
+   FONT PREVIEW HELPERS
+───────────────────────────────────────── */
+
+/* "tag|path" keys of fonts already registered with the browser */
+const loadedPreviewFonts = new Set<string>();
+
+function previewFamily(tag: string) {
+	return `ph_preview_${tag}`;
+}
+
+/* ─────────────────────────────────────────
+   FONTS MANAGER
+   command = fonts
+   action  = add | remove
+───────────────────────────────────────── */
+
+function FontsManager({
+	items,
+	submit,
+	showError,
+	clearMessage,
+	loadingAction,
+}: {
+	items: FontItem[];
+	submit: Submit;
+	showError: (text: string) => void;
+	clearMessage: () => void;
+	loadingAction: string | null;
+}) {
+	const [name, setName] = useState("");
+	const [tag, setTag] = useState("");
+	const [tagTouched, setTagTouched] = useState(false);
+	const [file, setFile] = useState<File | null>(null);
+	const fileInputRef = useRef<HTMLInputElement>(null);
+
+	const [previewText, setPreviewText] = useState("Printing House");
+
+	const [fontStatus, setFontStatus] = useState<
+		Record<string, "loading" | "loaded" | "error">
+	>({});
+
+	/* Load every font in the config so it can be previewed */
+	useEffect(() => {
+		let cancelled = false;
+
+		const setStatus = (
+			fontTag: string,
+			status: "loading" | "loaded" | "error",
+		) => {
+			if (!cancelled) {
+				setFontStatus((previous) =>
+					previous[fontTag] === status
+						? previous
+						: { ...previous, [fontTag]: status },
+				);
+			}
+		};
+
+		const loadFont = async (item: FontItem) => {
+			const key = `${item.tag}|${item.path}`;
+
+			if (loadedPreviewFonts.has(key)) {
+				setStatus(item.tag, "loaded");
+				return;
+			}
+
+			setStatus(item.tag, "loading");
+
+			try {
+				const face = new FontFace(
+					previewFamily(item.tag),
+					`url("${resolveAssetUrl(item.path)}")`,
+				);
+
+				await face.load();
+
+				document.fonts.add(face);
+
+				loadedPreviewFonts.add(key);
+
+				setStatus(item.tag, "loaded");
+			} catch {
+				setStatus(item.tag, "error");
+			}
+		};
+
+		items.forEach(loadFont);
+
+		return () => {
+			cancelled = true;
+		};
+	}, [items]);
+
+	const handleNameChange = (value: string) => {
+		setName(value);
+
+		if (!tagTouched) {
+			setTag(slugifyFontTag(value));
+		}
+	};
+
+	const handleFile = (event: ChangeEvent<HTMLInputElement>) => {
+		const next = event.target.files?.[0] ?? null;
+
+		if (!next) {
+			setFile(null);
+			return;
+		}
+
+		const error = validateFontFile(next);
+
+		if (error) {
+			showError(error);
+			event.target.value = "";
+			setFile(null);
+			return;
+		}
+
+		setFile(next);
+		clearMessage();
+	};
+
+	const addFont = async (event: FormEvent<HTMLFormElement>) => {
+		event.preventDefault();
+
+		const trimmedName = name.trim();
+		const trimmedTag = slugifyFontTag(tag);
+
+		if (!trimmedName) {
+			showError("Please enter a font name.");
+			return;
+		}
+
+		if (!trimmedTag) {
+			showError("Please enter a valid font tag (e.g. open_sans).");
+			return;
+		}
+
+		const fileError = validateFontFile(file);
+
+		if (fileError) {
+			showError(fileError);
+			return;
+		}
+
+		const formData = new FormData();
+
+		formData.append("command_type", "admin");
+		formData.append("command", COMMANDS.fonts);
+		formData.append("action", "add");
+		formData.append(FIELDS.name, trimmedName);
+		formData.append(FIELDS.tag, trimmedTag);
+		formData.append(FIELDS.font, file!);
+
+		const success = await submit(
+			formData,
+			"fonts-add",
+			"Font added successfully.",
+		);
+
+		if (success) {
+			setName("");
+			setTag("");
+			setTagTouched(false);
+			setFile(null);
+
+			if (fileInputRef.current) {
+				fileInputRef.current.value = "";
+			}
+		}
+	};
+
+	const removeFont = async (fontTag: string) => {
+		const confirmed = window.confirm(
+			`Remove font "${fontTag}" from the store?`,
+		);
+
+		if (!confirmed) {
+			return;
+		}
+
+		const formData = new FormData();
+
+		formData.append("command_type", "admin");
+		formData.append("command", COMMANDS.fonts);
+		formData.append("action", "remove");
+		formData.append(FIELDS.tag, fontTag);
+
+		await submit(formData, `fonts-remove-${fontTag}`, "Font removed successfully.");
+	};
+
+	return (
+		<SectionShell
+			icon={<Type size={20} />}
+			title="Fonts"
+			description="Fonts customers can choose when a product has font customisation."
+			badge={`${items.length} font${items.length === 1 ? "" : "s"}`}
+		>
+			<div className="grid gap-6 p-5 sm:p-6 lg:grid-cols-[1.1fr_1fr]">
+				<div>
+					<div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+						<h3 className="text-sm font-semibold text-gray-900">
+							Available Fonts
+						</h3>
+
+						{items.length > 0 && (
+							<input
+								type="text"
+								value={previewText}
+								onChange={(event) => setPreviewText(event.target.value)}
+								placeholder="Type to preview…"
+								aria-label="Preview text"
+								className="w-full rounded-lg border border-gray-300 px-3 py-2 text-xs outline-none focus:border-[#85161B] sm:w-56"
+							/>
+						)}
+					</div>
+
+					{items.length === 0 ? (
+						<div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 px-4 py-10 text-center text-sm text-gray-500">
+							No fonts found in the site configuration.
+						</div>
+					) : (
+						<div className="space-y-3">
+							{items.map((item) => {
+								const status = fontStatus[item.tag];
+
+								return (
+									<div
+										key={item.tag}
+										className="flex items-start gap-3 rounded-xl border border-gray-200 bg-gray-50 p-4"
+									>
+										<div className="min-w-0 flex-1">
+											<p className="text-sm font-semibold text-gray-900">
+												{item.name}
+											</p>
+
+											<p className="mt-1 text-xs text-gray-500">
+												Tag: <span className="font-medium">{item.tag}</span>
+											</p>
+
+											{/* LIVE PREVIEW */}
+											<div className="mt-3 rounded-lg border border-gray-200 bg-white px-3 py-3">
+												{status === "error" ? (
+													<p className="text-xs text-amber-600">
+														Preview unavailable — the browser couldn&apos;t load this
+														font file.
+													</p>
+												) : status === "loaded" ? (
+													<p
+														className="break-words text-2xl leading-snug text-gray-900"
+														style={{
+															fontFamily: `"${previewFamily(item.tag)}", sans-serif`,
+														}}
+													>
+														{previewText || item.name}
+													</p>
+												) : (
+													<p className="text-xs text-gray-400">
+														Loading preview…
+													</p>
+												)}
+											</div>
+
+											<a
+												href={resolveAssetUrl(item.path)}
+												target="_blank"
+												rel="noopener noreferrer"
+												className="mt-2 inline-block break-all text-xs text-[#85161B] hover:underline"
+											>
+												{item.path}
+											</a>
+										</div>
+
+										<button
+											type="button"
+											onClick={() => removeFont(item.tag)}
+											disabled={loadingAction !== null}
+											className="rounded-lg border border-red-200 bg-white p-2 text-red-600 hover:bg-red-50 disabled:opacity-50"
+											aria-label={`Remove font ${item.tag}`}
+										>
+											{loadingAction === `fonts-remove-${item.tag}` ? (
+												<Loader2 size={15} className="animate-spin" />
+											) : (
+												<Trash2 size={15} />
+											)}
+										</button>
+									</div>
+								);
+							})}
+						</div>
+					)}
+				</div>
+
+				<form
+					onSubmit={addFont}
+					className="h-fit rounded-xl border border-gray-200 p-4"
+				>
+					<h3 className="font-semibold text-gray-900">Add Font</h3>
+
+					<p className="mt-1 text-xs text-gray-500">
+						Upload a font file and give it a display name plus a unique tag.
+						The tag is what products send to the cart (e.g. open_sans).
+					</p>
+
+					<label className="mt-4 block text-xs font-medium text-gray-600">
+						Font name
+						<input
+							type="text"
+							value={name}
+							onChange={(event) => handleNameChange(event.target.value)}
+							placeholder="Open Sans Bold"
+							className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm outline-none focus:border-[#85161B]"
+						/>
+					</label>
+
+					<label className="mt-3 block text-xs font-medium text-gray-600">
+						Tag
+						<input
+							type="text"
+							value={tag}
+							onChange={(event) => {
+								setTagTouched(true);
+								setTag(slugifyFontTag(event.target.value));
+							}}
+							placeholder="open_sans"
+							className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm outline-none focus:border-[#85161B]"
+						/>
+					</label>
+
+					<label className="mt-4 flex min-h-[130px] cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-gray-300 bg-gray-50 px-4 text-center hover:border-[#85161B] hover:bg-[#85161B]/5">
+						<input
+							ref={fileInputRef}
+							type="file"
+							accept={FONT_ACCEPT}
+							onChange={handleFile}
+							className="hidden"
+						/>
+
+						<Type size={30} className="text-gray-400" />
+
+						<span className="mt-2 text-sm font-medium text-gray-700">
+							Choose font file
+						</span>
+
+						<span className="mt-1 text-xs text-gray-500">
+							.ttf, .otf, .woff, .woff2 · Max 10 MB
+						</span>
+					</label>
+
+					{file && (
+						<div className="mt-3 rounded-lg bg-gray-50 px-3 py-2">
+							<p className="truncate text-sm font-medium">{file.name}</p>
+							<p className="text-xs text-gray-500">{formatFileSize(file.size)}</p>
+						</div>
+					)}
+
+					<button
+						type="submit"
+						disabled={loadingAction !== null}
+						className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-[#85161B] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#6f1217] disabled:opacity-50"
+					>
+						<Spinner active={loadingAction === "fonts-add"}>
+							<Upload size={17} />
+						</Spinner>
+						Add Font
+					</button>
+				</form>
+			</div>
+		</SectionShell>
+	);
+}
+
+/* ─────────────────────────────────────────
    PAGE
 ───────────────────────────────────────── */
 
@@ -1805,6 +2254,9 @@ export default function StoreCustomisationPage() {
 							items={config.watchAndBuy}
 							{...sharedManagerProps}
 						/>
+
+						{/* FONTS */}
+						<FontsManager items={config.fonts} {...sharedManagerProps} />
 
 						{/* POPUP */}
 						<SectionShell

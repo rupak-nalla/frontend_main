@@ -25,6 +25,12 @@ import {
 } from "lucide-react";
 
 import ImageLightbox from "@/components/ImageLightbox";
+import {
+	assetUrl,
+	fetchSiteConfig,
+	parseSiteFonts,
+	type SiteFont,
+} from "@/components/siteConfig";
 
 /* ============================================================================
    CONSTANTS
@@ -63,7 +69,7 @@ type VariantMap = Record<string, Record<string, VariantOption>>;
 
 type CustomizeRequirement = {
 	key: string;
-	type: "text" | "photo" | "photos";
+	type: "text" | "photo" | "photos" | "font";
 	max: number;
 	placeholder: string;
 	optional: boolean;
@@ -303,12 +309,14 @@ function normalizeReview(raw: RawReview, index: number): Review {
    1. text:10:Enter your custom name
    2. photo:Upload Photo
    3. photos:5:Upload Photos
+   4. font:Choose Font
 
    Older format:
 
-   4. key:text:10:Enter your custom name
-   5. key:photo:1:Upload Photo
-   6. key:photos:5:Upload Photos
+   5. key:text:10:Enter your custom name
+   6. key:photo:1:Upload Photo
+   7. key:photos:5:Upload Photos
+   8. fontforname:font:Choose Font
 ============================================================================ */
 
 function parseCustomizeRequirements(
@@ -349,14 +357,15 @@ function parseCustomizeRequirements(
 			}
 
 			let key = "";
-			let type: "text" | "photo" | "photos";
+			let type: "text" | "photo" | "photos" | "font";
 			let max = 1;
 			let placeholder = "";
 
 			if (
 				parts[0] === "text" ||
 				parts[0] === "photo" ||
-				parts[0] === "photos"
+				parts[0] === "photos" ||
+				parts[0] === "font"
 			) {
 				/* NEW FORMAT */
 
@@ -366,6 +375,10 @@ function parseCustomizeRequirements(
 					key = "photo";
 					max = 1;
 					placeholder = parts.slice(1).join(":").trim();
+				} else if (type === "font") {
+					key = "fontforname";
+					max = 1;
+					placeholder = parts.slice(1).join(":").trim() || "Choose Font";
 				} else {
 					const possibleMax = Number(parts[1]);
 
@@ -393,22 +406,30 @@ function parseCustomizeRequirements(
 			} else if (
 				/* OLD FORMAT */
 				parts.length >= 3 &&
-				(parts[1] === "text" || parts[1] === "photo" || parts[1] === "photos")
+				(parts[1] === "text" ||
+					parts[1] === "photo" ||
+					parts[1] === "photos" ||
+					parts[1] === "font")
 			) {
 				key = parts[0];
 
 				type = parts[1];
 
-				const possibleMax = Number(parts[2]);
-
-				if (Number.isFinite(possibleMax) && possibleMax >= 1) {
-					max = possibleMax;
-
-					placeholder = parts.slice(3).join(":").trim();
+				if (type === "font") {
+					max = 1;
+					placeholder = parts.slice(2).join(":").trim() || "Choose Font";
 				} else {
-					max = type === "photo" ? 1 : 100;
+					const possibleMax = Number(parts[2]);
 
-					placeholder = parts.slice(2).join(":").trim();
+					if (Number.isFinite(possibleMax) && possibleMax >= 1) {
+						max = possibleMax;
+
+						placeholder = parts.slice(3).join(":").trim();
+					} else {
+						max = type === "photo" ? 1 : 100;
+
+						placeholder = parts.slice(2).join(":").trim();
+					}
 				}
 			} else {
 				return null;
@@ -433,6 +454,10 @@ function parseCustomizeRequirements(
 			};
 		})
 		.filter((item): item is CustomizeRequirement => item !== null);
+}
+
+function fontFamilyName(tag: string) {
+	return `ph-font-${tag.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
 }
 
 /* ============================================================================
@@ -748,6 +773,8 @@ export default function ProductPage() {
 
 	const [selectedOption, setSelectedOption] = useState("");
 
+	const [availableFonts, setAvailableFonts] = useState<SiteFont[]>([]);
+
 	/* ==========================================================================
 	   VARIANTS
 	========================================================================== */
@@ -883,6 +910,11 @@ export default function ProductPage() {
 		[product?.customizeReqs],
 	);
 
+	const hasFontRequirement = useMemo(
+		() => customizeRequirements.some((requirement) => requirement.type === "font"),
+		[customizeRequirements],
+	);
+
 	const hasOptions =
 		!!product &&
 		!product.noCustomization &&
@@ -893,6 +925,62 @@ export default function ProductPage() {
 		!!product &&
 		!product.noCustomization &&
 		(customizeRequirements.length > 0 || hasOptions);
+
+	/* Load fonts from site config when this product asks for a font choice */
+	useEffect(() => {
+		if (!hasFontRequirement) {
+			return;
+		}
+
+		let cancelled = false;
+		const styleId = "ph-product-font-faces";
+
+		fetchSiteConfig()
+			.then((config) => {
+				if (cancelled) {
+					return;
+				}
+
+				const fonts = parseSiteFonts(config.fonts);
+				setAvailableFonts(fonts);
+
+				const existing = document.getElementById(styleId);
+				if (existing) {
+					existing.remove();
+				}
+
+				if (fonts.length === 0) {
+					return;
+				}
+
+				const style = document.createElement("style");
+				style.id = styleId;
+				style.textContent = fonts
+					.map((font) => {
+						const url = assetUrl(font.path);
+						const family = fontFamilyName(font.tag);
+						const formatHint = url.toLowerCase().endsWith(".woff2")
+							? "woff2"
+							: url.toLowerCase().endsWith(".woff")
+								? "woff"
+								: url.toLowerCase().endsWith(".otf")
+									? "opentype"
+									: "truetype";
+
+						return `@font-face{font-family:'${family}';src:url('${url}') format('${formatHint}');font-display:swap;}`;
+					})
+					.join("\n");
+
+				document.head.appendChild(style);
+			})
+			.catch((err) => {
+				console.error("Failed to load fonts config:", err);
+			});
+
+		return () => {
+			cancelled = true;
+		};
+	}, [hasFontRequirement]);
 
 	/* ==========================================================================
 	   FETCH PRODUCT
@@ -1099,6 +1187,15 @@ export default function ProductPage() {
 		setCustomizationValidationError("");
 	};
 
+	const handleFontSelect = (key: string, tag: string) => {
+		setCustomizationValues((previous) => ({
+			...previous,
+			[key]: tag,
+		}));
+
+		setCustomizationValidationError("");
+	};
+
 	/* ==========================================================================
 	   SINGLE PHOTO
 	========================================================================== */
@@ -1277,6 +1374,31 @@ export default function ProductPage() {
 				if (files.length > requirement.max) {
 					setCustomizationValidationError(
 						`${requirement.placeholder}: Maximum ${requirement.max} photos allowed.`,
+					);
+
+					return false;
+				}
+			}
+
+			if (requirement.type === "font") {
+				const selectedTag =
+					customizationValues[requirement.key]?.trim() || "";
+
+				if (!requirement.optional && !selectedTag) {
+					setCustomizationValidationError(
+						`${requirement.placeholder} is required.`,
+					);
+
+					return false;
+				}
+
+				if (
+					selectedTag &&
+					availableFonts.length > 0 &&
+					!availableFonts.some((font) => font.tag === selectedTag)
+				) {
+					setCustomizationValidationError(
+						`${requirement.placeholder}: Please choose a valid font.`,
 					);
 
 					return false;
@@ -2285,6 +2407,57 @@ export default function ProductPage() {
 																			</button>
 																		</div>
 																	))}
+																</div>
+															)}
+														</div>
+													)}
+
+													{/* FONT */}
+
+													{requirement.type === "font" && (
+														<div>
+															{availableFonts.length === 0 ? (
+																<p className="rounded-xl border border-[#DED6D0] bg-[#F7F4F1] px-4 py-3.5 text-sm text-[#2E2E2E]/60">
+																	No fonts are available yet. Please check back
+																	soon.
+																</p>
+															) : (
+																<div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+																	{availableFonts.map((font) => {
+																		const selected =
+																			textValue === font.tag;
+
+																		return (
+																			<button
+																				key={font.tag}
+																				type="button"
+																				onClick={() =>
+																					handleFontSelect(
+																						requirement.key,
+																						font.tag,
+																					)
+																				}
+																				className={`rounded-xl border px-4 py-3.5 text-left transition ${
+																					selected
+																						? "border-[#85161B] bg-[#85161B]/[0.06] ring-2 ring-[#85161B]/15"
+																						: "border-[#DED6D0] bg-white hover:border-[#85161B]/40"
+																				}`}
+																			>
+																				<p
+																					className="truncate text-lg leading-7 text-[#2E2E2E]"
+																					style={{
+																						fontFamily: `'${fontFamilyName(font.tag)}', sans-serif`,
+																					}}
+																				>
+																					Aa Bb Cc 123
+																				</p>
+
+																				<p className="mt-1.5 text-sm font-medium text-[#2E2E2E]/70">
+																					{font.name}
+																				</p>
+																			</button>
+																		);
+																	})}
 																</div>
 															)}
 														</div>

@@ -97,6 +97,10 @@ export async function POST(request: NextRequest) {
 		for (const [, value] of formData.entries()) {
 			if (value instanceof File) {
 				const isVideo = value.type.startsWith("video/");
+				const isFont =
+					value.type.startsWith("font/") ||
+					/\.(ttf|otf|woff2?|eot)$/i.test(value.name);
+
 				const maxSize = isVideo ? MAX_VIDEO_SIZE : MAX_IMAGE_SIZE;
 
 				if (value.size > maxSize) {
@@ -105,7 +109,9 @@ export async function POST(request: NextRequest) {
 							status: 400,
 							message: isVideo
 								? "Video size must not exceed 50 MB."
-								: "Image size must not exceed 10 MB.",
+								: isFont
+									? "Font file size must not exceed 10 MB."
+									: "Image size must not exceed 10 MB.",
 						},
 						{ status: 400 },
 					);

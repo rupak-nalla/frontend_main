@@ -15,6 +15,12 @@ export type SiteReview = {
 	star_count: number;
 };
 
+export type SiteFont = {
+	tag: string;
+	name: string;
+	path: string;
+};
+
 export type SiteConfig = {
 	strip: string[];
 
@@ -30,10 +36,66 @@ export type SiteConfig = {
 
 	videos?: string[];
 
+	fonts?: Record<string, { name?: string; path?: string } | string>;
+
 	watch_and_buy?: Record<string, string>;
 
 	reviews: SiteReview[];
 };
+
+/**
+ * Normalise config.fonts into a stable list.
+ *
+ * Config shape:
+ * {
+ *   "open_sans": { "name": "Open Sans Bold", "path": "assets/fonts/open_sans.ttf" }
+ * }
+ */
+export function parseSiteFonts(
+	fonts: SiteConfig["fonts"] | unknown,
+): SiteFont[] {
+	if (!fonts || typeof fonts !== "object" || Array.isArray(fonts)) {
+		return [];
+	}
+
+	return Object.entries(fonts as Record<string, unknown>)
+		.map(([tag, value]) => {
+			if (typeof value === "string" && value.trim()) {
+				return {
+					tag,
+					name: tag,
+					path: value.trim(),
+				};
+			}
+
+			if (value && typeof value === "object" && !Array.isArray(value)) {
+				const entry = value as Record<string, unknown>;
+				const path =
+					typeof entry.path === "string"
+						? entry.path.trim()
+						: typeof entry.url === "string"
+							? entry.url.trim()
+							: typeof entry.font === "string"
+								? entry.font.trim()
+								: "";
+
+				if (!path) {
+					return null;
+				}
+
+				const name =
+					typeof entry.name === "string" && entry.name.trim()
+						? entry.name.trim()
+						: tag;
+
+				return { tag, name, path };
+			}
+
+			return null;
+		})
+		.filter((item): item is SiteFont => item !== null)
+		.sort((a, b) => a.name.localeCompare(b.name));
+}
 
 /**
  * Converts a relative asset path from config.json
